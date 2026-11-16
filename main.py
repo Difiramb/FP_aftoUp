@@ -1,66 +1,97 @@
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from funpaybotengine import Bot as FunPayBot
 from vkbottle.bot import Bot as VKBot, Message
 
-# --- КОНФИГУРАЦИЯ (лучше вынести в переменные окружения на Bothost) ---
-VK_TOKEN = "ВАШ_ТОКЕН_ГРУППЫ_VK"
-FUNPAY_GOLDEN_KEY = "ВАШ_GOLDEN_KEY_ОТ_FUNPAY"
+# ==========================================
+# 1. НАСТРОЙКА И ПРОВЕРКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ
+# ==========================================
+VK_TOKEN = os.environ.get("VK_TOKEN")
+FUNPAY_GOLDEN_KEY = os.environ.get("FUNPAY_GOLDEN_KEY")
 
-# Инициализация клиентов
-vk_bot = VKBot(token=VK_TOKEN)
-funpay_bot = FunPayBot(golden_key=FUNPAY_GOLDEN_KEY)
+# ID вашего личного профиля ВК (чтобы бот слушался только вас).
+# Обязательно добавьте переменную ADMIN_ID на Bothost!
+ADMIN_ID = os.environ.get("ADMIN_ID") 
 
-# Настройка логирования
+# Проверка, что все ключи на месте, чтобы бот не упал с непонятной ошибкой
+if not VK_TOKEN:
+    raise ValueError("❌ Ошибка: Не задана переменная окружения VK_TOKEN на Bothost!")
+if not FUNPAY_GOLDEN_KEY:
+    raise ValueError("❌ Ошибка: Не задана переменная окружения FUNPAY_GOLDEN_KEY на Bothost!")
+if not ADMIN_ID:
+    logging.warning("⚠️ ВНИМАНИЕ: Переменная ADMIN_ID не задана! Любой человек сможет управлять ботом.")
+
+# Настройка логирования (чтобы вы видели, что происходит, в панели Bothost)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ==========================================
+# 2. ИНИЦИАЛИЗАЦИЯ КЛИЕНТОВ
+# ==========================================
+vk_bot = VKBot(token=VK_TOKEN)
+funpay_bot = FunPayBot(golden_key=FUNPAY_GOLDEN_KEY)
+
+# ==========================================
+# 3. ФУНКЦИЯ ПОДНЯТИЯ ЛОТОВ
+# ==========================================
 async def raise_all_lots():
     """Асинхронная задача для поднятия всех лотов на FunPay."""
-    logger.info(f"[{datetime.now()}] Запуск задачи по поднятию лотов...")
+    logger.info(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Запуск задачи по поднятию лотов...")
     try:
-        # В funpaybotengine метод для поднятия лотов может называться иначе,
-        # проверьте документацию. Примерный вызов:
-        # await funpay_bot.raise_all_lots()
+        # В библиотеке funpaybotengine метод может называться по-разному.
+        # Если метод ниже выдаст ошибку AttributeError, проверьте документацию библиотеки.
+        # Часто используется что-то вроде:
+        # await funpay_bot.raise_all_lots() 
         
-        # Для примера используем заглушку, которая просто логирует успех.
-        # В реальном коде здесь будет вызов API FunPay.
+        # ЗАГЛУШКА (УДАЛИТЕ ЕЕ, КОГДА ПРОПИШЕТЕ ПРАВИЛЬНЫЙ МЕТОД):
         logger.info("✅ Все лоты успешно подняты (симуляция).")
+        await asyncio.sleep(2) # Имитация задержки
         
-        # Опционально: можно отправить уведомление в VK об успехе.
-        # await vk_bot.api.messages.send(
-        #     peer_id=ВАШ_ID,  # ID пользователя или беседы
-        #     message="✅ Автоподнятие лотов на FunPay выполнено успешно.",
-        #     random_id=0
-        # )
     except Exception as e:
         logger.error(f"❌ Ошибка при поднятии лотов: {e}")
 
-@vk_bot.on.message(text=["поднять лоты", "raise"])
+# ==========================================
+# 4. ОБРАБОТЧИК КОМАНД В ВК
+# ==========================================
+@vk_bot.on.message(text=["поднять лоты", "raise", "Поднять лоты", "Поднять"])
 async def manual_raise_handler(message: Message):
-    """Обработчик ручной команды в VK для немедленного поднятия."""
-    await message.answer("🚀 Запускаю процесс поднятия лотов...")
-    await raise_all_lots()
-    await message.answer("✅ Процесс завершён. Проверьте логи.")
+    """Обработчик ручной команды в VK."""
+    
+    # Проверка: если ADMIN_ID задан и сообщение пришло НЕ от вас — игнорируем
+    if ADMIN_ID and str(message.from_id) != str(ADMIN_ID):
+        await message.answer("⛔ У вас нет прав на управление этим ботом.")
+        return
 
+    await message.answer("🚀 Принято! Запускаю процесс поднятия лотов...")
+    await raise_all_lots()
+    await message.answer("✅ Процесс завершён. Бот продолжит работать в фоне.")
+
+# ==========================================
+# 5. ЗАПУСК БОТА И ПЛАНИРОВЩИКА
+# ==========================================
 async def main():
-    # Настройка и запуск планировщика
+    # Настройка планировщика
     scheduler = AsyncIOScheduler()
-    # Планируем задачу каждые 2 часа.
-    # В реальности FunPay может иметь свои ограничения (например, кулдаун),
-    # поэтому интервал может потребоваться скорректировать.
-    scheduler.add_job(raise_all_lots, 'interval', hours=2, 
-                      next_run_time=datetime.now() + timedelta(seconds=10)) # Первый запуск через 10 секунд после старта
+    
+    # Запуск каждые 2 часа. 
+    # next_run_time=... означает, что первый раз бот поднимет лоты через 10 секунд после запуска.
+    scheduler.add_job(
+        raise_all_lots, 
+        'interval', 
+        hours=2, 
+        next_run_time=datetime.now() + timedelta(seconds=10)
+    )
     
     # Запускаем планировщик в фоне
     scheduler.start()
-    logger.info("Планировщик запущен. Автоподнятие будет происходить каждые 2 часа.")
+    logger.info("⏰ Планировщик запущен. Автоподнятие будет происходить каждые 2 часа.")
 
     # Запускаем VK-бота
-    logger.info("Запуск VK-бота...")
+    logger.info("🤖 Запуск VK-бота...")
     await vk_bot.run_polling()
 
 if __name__ == "__main__":
